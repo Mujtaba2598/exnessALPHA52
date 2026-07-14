@@ -16,13 +16,9 @@ const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || '12345678901234567890123456
 const PRIMARY_API_KEY = 'cf_api_aeeb832dd35363d9d654cd8cfaf4f3243ee24f7ff339416d7c2ee8ce3599e9df';
 
 console.log('🕋 100% HALAL ULTRA-AGGRESSIVE AI TRADING BOT');
-console.log('📦 Version: 52.0.0');
-console.log('✅ FULLY FIXED - TRADES WORKING');
-console.log('✅ AI-DRIVEN TRADING');
-console.log('✅ MAXIMUM PROFIT PER TRADE');
-console.log('✅ UNLIMITED CONCURRENT TRADES');
-console.log('✅ AUTO-COMPOUNDING');
-console.log('✅ 100% HALAL - SWAP FREE');
+console.log('📦 Version: 53.0.0 - DEBUG VERSION');
+console.log('✅ FULL DEBUGGING ENABLED');
+console.log('✅ TRADES WILL BE FORCED');
 
 // ==================== DATA DIRECTORY ====================
 const dataDir = path.join(__dirname, 'data');
@@ -69,6 +65,7 @@ function saveConfig(newConfig) {
 // ==================== TICKERALL INIT ====================
 let ticker = null;
 let apiKeyStatus = 'active';
+let globalAccountId = null;
 
 function initTicker() {
     let apiKey = config.tickerallApiKey || PRIMARY_API_KEY;
@@ -81,6 +78,7 @@ function initTicker() {
     try {
         ticker = new Tickerall({ apiKey: apiKey });
         console.log('✅ TickerAll initialized successfully');
+        console.log(`🔑 API Key: ${apiKey.substring(0, 10)}...`);
         apiKeyStatus = 'active';
         return true;
     } catch (error) {
@@ -194,6 +192,9 @@ function authenticate(req, res, next) {
 // ==================== BALANCE DETECTION - 6 METHODS ====================
 async function fetchRealBalance(accountId) {
     try {
+        console.log(`🔍 FETCHING BALANCE for session: ${accountId}`);
+        console.log(`🔍 Ticker exists: ${!!ticker}`);
+        
         if (!ticker) {
             console.error('❌ TickerAll not initialized!');
             return { balance: 0, currency: 'USD', error: 'TickerAll not initialized', isReal: false };
@@ -203,8 +204,6 @@ async function fetchRealBalance(accountId) {
             return { balance: 0, currency: 'USD', error: 'No account ID', isReal: false };
         }
 
-        console.log(`🔍 Fetching balance for session: ${accountId}`);
-        
         const accountInfo = await Promise.race([
             ticker.accounts.get(accountId),
             new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 15000))
@@ -215,23 +214,19 @@ async function fetchRealBalance(accountId) {
             return { balance: 0, currency: 'USD', error: 'No account info received', isReal: false };
         }
 
+        console.log('📊 ACCOUNT INFO RECEIVED');
+        console.log('📊 Keys:', Object.keys(accountInfo).join(', '));
+
         let balance = 0;
         let currency = accountInfo.currency || accountInfo.Currency || 'USD';
         let foundField = null;
 
-        const standardFields = [
-            'balance', 'Balance', 'BALANCE', 'equity', 'Equity', 'EQUITY',
+        // Check all possible balance fields
+        const balanceFields = ['balance', 'Balance', 'BALANCE', 'equity', 'Equity', 'EQUITY', 
             'freeMargin', 'FreeMargin', 'FREEMARGIN', 'marginFree', 'MarginFree', 'MARGINFREE',
-            'amount', 'Amount', 'AMOUNT', 'total', 'Total', 'TOTAL',
-            'cash', 'Cash', 'CASH', 'funds', 'Funds', 'FUNDS',
-            'available', 'Available', 'AVAILABLE', 'usable', 'Usable', 'USABLE',
-            'net', 'Net', 'NET', 'value', 'Value', 'VALUE',
-            'asset', 'Asset', 'ASSET', 'money', 'Money', 'MONEY',
-            'capital', 'Capital', 'CAPITAL', 'profit', 'Profit', 'PROFIT',
-            'pnl', 'Pnl', 'PNL'
-        ];
+            'amount', 'Amount', 'AMOUNT', 'total', 'Total', 'TOTAL', 'cash', 'Cash', 'CASH'];
 
-        for (const field of standardFields) {
+        for (const field of balanceFields) {
             if (accountInfo[field] !== undefined && accountInfo[field] !== null) {
                 const val = parseFloat(accountInfo[field]);
                 if (!isNaN(val) && val > 0 && val < 1000000000) {
@@ -243,98 +238,16 @@ async function fetchRealBalance(accountId) {
             }
         }
 
+        // If still 0, scan all numeric fields
         if (balance === 0) {
-            console.log('🔍 Scanning ALL fields for ANY positive number...');
-            const keywords = ['balance', 'bal', 'equity', 'eq', 'margin', 'free', 'fund', 'cash', 'total', 'amount', 'net', 'value', 'asset', 'money', 'capital', 'avail', 'usable', 'client', 'account', 'profit', 'pnl'];
-            for (const [key, value] of Object.entries(accountInfo)) {
-                if (typeof value === 'number' && !isNaN(value) && value > 0 && value < 1000000000) {
-                    const keyLower = key.toLowerCase();
-                    if (keywords.some(kw => keyLower.includes(kw))) {
-                        balance = value;
-                        foundField = key;
-                        console.log(`✅ Found balance in field "${key}": ${balance}`);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (balance === 0) {
-            console.log('🔍 Taking largest positive number as balance...');
-            let largestValue = 0;
-            let largestKey = '';
-            for (const [key, value] of Object.entries(accountInfo)) {
-                if (typeof value === 'number' && !isNaN(value) && value > 0 && value < 1000000000) {
-                    if (value > largestValue) {
-                        largestValue = value;
-                        largestKey = key;
-                    }
-                }
-            }
-            if (largestValue > 0) {
-                balance = largestValue;
-                foundField = largestKey;
-                console.log(`✅ Used largest value from field "${largestKey}": ${balance}`);
-            }
-        }
-
-        if (balance === 0) {
-            console.log('🔍 Checking nested objects...');
-            for (const [key, value] of Object.entries(accountInfo)) {
-                if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                    for (const [subKey, subValue] of Object.entries(value)) {
-                        if (typeof subValue === 'number' && !isNaN(subValue) && subValue > 0 && subValue < 1000000000) {
-                            const subKeyLower = subKey.toLowerCase();
-                            if (subKeyLower.includes('balance') || subKeyLower.includes('equity') || 
-                                subKeyLower.includes('fund') || subKeyLower.includes('cash') ||
-                                subKeyLower.includes('total') || subKeyLower.includes('amount') ||
-                                subKeyLower.includes('profit') || subKeyLower.includes('pnl')) {
-                                balance = subValue;
-                                foundField = `${key}.${subKey}`;
-                                console.log(`✅ Found balance in nested "${key}.${subKey}": ${balance}`);
-                                break;
-                            }
-                        }
-                    }
-                    if (balance > 0) break;
-                }
-            }
-        }
-
-        if (balance === 0) {
-            console.log('🔍 Checking stored user balance...');
-            const users = readUsers();
-            for (const [email, userData] of Object.entries(users)) {
-                if (userData.tickerallSessionId === accountId && userData.lastBalance > 0) {
-                    balance = userData.lastBalance;
-                    currency = userData.lastBalanceCurrency || 'USD';
-                    foundField = 'stored_balance';
-                    console.log(`✅ Using stored balance: ${balance}`);
-                    break;
-                }
-            }
-        }
-
-        if (balance === 0) {
-            console.log('🔍 FORCE: Using ANY positive number found...');
+            console.log('🔍 Scanning all numeric fields...');
             for (const [key, value] of Object.entries(accountInfo)) {
                 if (typeof value === 'number' && !isNaN(value) && value > 0 && value < 1000000000) {
                     balance = value;
                     foundField = key;
-                    console.log(`✅ Forced balance from field "${key}": ${balance}`);
+                    console.log(`✅ Found balance in field "${key}": ${balance}`);
                     break;
                 }
-            }
-        }
-
-        const users = readUsers();
-        for (const [email, userData] of Object.entries(users)) {
-            if (userData.tickerallSessionId === accountId) {
-                userData.lastBalance = balance;
-                userData.lastBalanceCurrency = currency;
-                userData.lastBalanceUpdate = new Date().toISOString();
-                writeUsers(users);
-                break;
             }
         }
 
@@ -380,6 +293,7 @@ app.post('/api/set-exness-creds', authenticate, async (req, res) => {
                 ]);
                 accountId = result.accountId;
                 console.log(`✅ Session created: ${accountId}`);
+                globalAccountId = accountId;
                 break;
             } catch (err) {
                 lastError = err.message;
@@ -477,11 +391,6 @@ app.get('/api/debug-balance', authenticate, async (req, res) => {
     } catch (error) {
         res.status(500).json({ success: false, message: error.message });
     }
-});
-
-// ==================== API KEY STATUS ====================
-app.get('/api/api-key-status', authenticate, (req, res) => {
-    res.json({ success: true, status: apiKeyStatus });
 });
 
 // ==================== ADMIN ROUTES ====================
@@ -673,7 +582,7 @@ app.post('/api/admin/change-password', authenticate, async (req, res) => {
     }
 });
 
-// ==================== FIXED AI TRADING ENGINE - GUARANTEED TRADES ====================
+// ==================== FIXED TRADING ENGINE WITH FULL DEBUGGING ====================
 const engines = {};
 
 class UltraAggressiveAIEngine {
@@ -695,92 +604,142 @@ class UltraAggressiveAIEngine {
         this.totalInvestment = config.investmentAmount;
         this.compoundMultiplier = 1;
         this.forceTradeAttempts = 0;
+        this.lastError = null;
+        console.log(`✅ Engine created for ${userEmail} with account ${accountId}`);
     }
 
-    // ==================== FORCE TRADE ====================
+    // ==================== FORCE TRADE WITH FULL DEBUG ====================
     async forceTrade() {
+        console.log('========================================');
+        console.log('🔥 FORCE TRADE EXECUTION STARTED');
+        console.log(`🕐 Time: ${new Date().toISOString()}`);
+        console.log(`📧 User: ${this.userEmail}`);
+        console.log(`🆔 Session: ${this.sessionId}`);
+        console.log(`🏦 Account ID: ${this.accountId}`);
+        console.log(`📊 Symbols: ${this.config.tradingPairs.join(', ')}`);
+        console.log(`💵 Investment: $${this.totalInvestment}`);
+        console.log('========================================');
+
         try {
-            if (!this.isActive) return false;
-            if (!ticker) {
-                console.log('❌ TickerAll not initialized');
+            if (!this.isActive) {
+                console.log('❌ Engine not active');
                 return false;
             }
 
-            // Get first symbol
-            const symbol = this.config.tradingPairs[0] || 'XAUUSD';
-            console.log(`🔥 FORCING TRADE on ${symbol}`);
+            if (!ticker) {
+                console.log('❌ TickerAll not initialized!');
+                this.lastError = 'TickerAll not initialized';
+                return false;
+            }
 
-            // Get balance
+            console.log('✅ TickerAll is initialized');
+
+            // Get symbol
+            const symbol = this.config.tradingPairs[0] || 'XAUUSD';
+            console.log(`📊 Trading Symbol: ${symbol}`);
+
+            // STEP 1: Get balance with FULL debug
+            console.log('📊 STEP 1: Fetching balance...');
             const balanceResult = await fetchRealBalance(this.accountId);
+            console.log(`📊 Balance Result:`, JSON.stringify(balanceResult, null, 2));
+            
             const balance = balanceResult.balance || 0;
             console.log(`💰 Balance: $${balance}`);
 
             if (balance < 3) {
-                console.log(`⚠️ Insufficient balance: $${balance}`);
+                console.log(`⚠️ Insufficient balance: $${balance} (need at least $3)`);
+                this.lastError = `Insufficient balance: $${balance}`;
                 return false;
             }
 
-            // Calculate position size
+            // STEP 2: Calculate position size
+            console.log('📊 STEP 2: Calculating position size...');
             const positionSize = Math.min(balance * 0.15, 10);
             console.log(`📊 Position size: $${positionSize.toFixed(2)}`);
 
-            // Get price with retry
+            // STEP 3: Get price with retry
+            console.log('📊 STEP 3: Getting market price...');
             let entryPrice = 0;
             let priceAttempts = 0;
             while (entryPrice <= 0 && priceAttempts < 5) {
                 try {
+                    console.log(`📊 Price attempt ${priceAttempts + 1}/5...`);
                     const price = await ticker.market.getPrice(this.accountId, symbol);
-                    entryPrice = price.ask || price.bid || 0;
-                    console.log(`📊 Price attempt ${priceAttempts+1}: ${entryPrice}`);
+                    console.log(`📊 Price response:`, JSON.stringify(price, null, 2));
+                    entryPrice = price.ask || price.bid || price.close || price.last || 0;
+                    console.log(`📊 Extracted price: ${entryPrice}`);
                 } catch (e) {
-                    console.log(`⚠️ Price fetch attempt ${priceAttempts+1} failed:`, e.message);
+                    console.log(`⚠️ Price fetch attempt ${priceAttempts + 1} failed:`, e.message);
+                    console.log(`⚠️ Error details:`, e);
                 }
                 if (entryPrice <= 0) {
                     priceAttempts++;
-                    await new Promise(r => setTimeout(r, 500));
+                    await new Promise(r => setTimeout(r, 1000));
                 }
             }
 
             if (entryPrice <= 0) {
-                console.log(`⚠️ Invalid price: ${entryPrice}`);
+                console.log(`⚠️ Invalid price: ${entryPrice} after ${priceAttempts} attempts`);
+                this.lastError = `Invalid price: ${entryPrice}`;
                 return false;
             }
 
+            console.log(`✅ Price fetched: $${entryPrice}`);
+
+            // STEP 4: Calculate volume
+            console.log('📊 STEP 4: Calculating volume...');
             const volume = positionSize / entryPrice;
+            console.log(`📊 Volume: ${volume.toFixed(4)}`);
+
             if (volume < 0.001) {
                 console.log(`⚠️ Volume too small: ${volume}`);
+                this.lastError = `Volume too small: ${volume}`;
                 return false;
             }
 
-            // Determine side - always BUY to ensure execution
+            // STEP 5: Always BUY to ensure execution
             const side = 'BUY';
-            console.log(`📈 EXECUTING ${side} on ${symbol} at $${entryPrice} (Volume: ${volume.toFixed(4)})`);
+            console.log(`📊 STEP 5: Executing ${side} order...`);
+            console.log(`📊 Symbol: ${symbol}`);
+            console.log(`📊 Volume: ${Math.min(volume, 1.0).toFixed(4)}`);
 
-            // Place order with retry
+            // STEP 6: Place order with retry
+            console.log('📊 STEP 6: Placing order...');
             let order = null;
             let orderAttempts = 0;
             while (order === null && orderAttempts < 5) {
                 try {
+                    console.log(`📊 Order attempt ${orderAttempts + 1}/5...`);
                     order = await ticker.orders.place(this.accountId, {
                         type: 'market',
                         symbol: symbol,
                         side: side,
                         volume: Math.min(volume, 1.0)
                     });
-                    console.log(`✅ ORDER PLACED SUCCESSFULLY! Order ID: ${order.id}`);
+                    console.log(`✅ ORDER PLACED SUCCESSFULLY!`);
+                    console.log(`📊 Order response:`, JSON.stringify(order, null, 2));
                 } catch (e) {
-                    console.log(`⚠️ Order attempt ${orderAttempts+1} failed:`, e.message);
+                    console.log(`⚠️ Order attempt ${orderAttempts + 1} failed:`, e.message);
+                    console.log(`⚠️ Error details:`, e);
+                    if (e.response) {
+                        console.log(`⚠️ Response data:`, e.response.data);
+                    }
                     orderAttempts++;
-                    await new Promise(r => setTimeout(r, 1000));
+                    await new Promise(r => setTimeout(r, 2000));
                 }
             }
 
             if (!order) {
                 console.log(`❌ Failed to place order after ${orderAttempts} attempts`);
+                this.lastError = `Order placement failed after ${orderAttempts} attempts`;
                 return false;
             }
 
-            // Store position
+            console.log(`✅ Order ID: ${order.id}`);
+            console.log(`✅ Order placed at $${entryPrice}`);
+
+            // STEP 7: Store position
+            console.log('📊 STEP 7: Storing position...');
             this.openPositions.push({
                 symbol: symbol,
                 side: side,
@@ -810,10 +769,13 @@ class UltraAggressiveAIEngine {
                 leverage: '1:2'
             });
 
-            // Save trade
+            // STEP 8: Save trade to file
+            console.log('📊 STEP 8: Saving trade to file...');
             const tradeFile = path.join(tradesDir, this.userEmail.replace(/[^a-z0-9]/gi, '_') + '.json');
             let allTrades = [];
-            if (fs.existsSync(tradeFile)) allTrades = JSON.parse(fs.readFileSync(tradeFile));
+            if (fs.existsSync(tradeFile)) {
+                allTrades = JSON.parse(fs.readFileSync(tradeFile));
+            }
             allTrades.unshift({
                 symbol: symbol,
                 side: `${side} OPEN`,
@@ -828,13 +790,23 @@ class UltraAggressiveAIEngine {
 
             console.log(`✅ ${side} opened at $${entryPrice.toFixed(5)}`);
             console.log(`📊 Open positions: ${this.openPositions.length}`);
+            console.log('========================================');
+            console.log('✅ FORCE TRADE COMPLETED SUCCESSFULLY!');
+            console.log('========================================');
             
             this.forceTradeAttempts = 0;
             return true;
 
         } catch (error) {
-            console.error(`❌ Force trade failed:`, error.message);
+            console.error('❌ Force trade failed with error:');
+            console.error(error);
+            console.error('❌ Error stack:', error.stack);
+            this.lastError = error.message;
             this.forceTradeAttempts++;
+            console.log('========================================');
+            console.log(`❌ FORCE TRADE FAILED (Attempt ${this.forceTradeAttempts})`);
+            console.log(`❌ Error: ${error.message}`);
+            console.log('========================================');
             return false;
         }
     }
@@ -918,11 +890,6 @@ class UltraAggressiveAIEngine {
                 signal.reasons.push(`Strong upward momentum, overextended`);
             }
 
-            // Win streak bonus
-            if (signal.action === 'BUY' && this.winStreak > 0) {
-                signal.confidence = Math.min(1, signal.confidence + (this.winStreak * 0.02));
-            }
-
             console.log(`🤖 AI Analysis: ${signal.action} (${(signal.confidence*100).toFixed(0)}% confidence)`);
 
             return signal;
@@ -966,12 +933,10 @@ class UltraAggressiveAIEngine {
 
                 // DYNAMIC TAKE PROFIT
                 if (profitPercent > 0) {
-                    // Let it run if near peak
                     if (profitPercent >= position.maxProfit * 0.95) {
                         continue;
                     }
 
-                    // Take profit at 30% from peak
                     if (position.maxProfit > 0 && profitPercent < position.maxProfit * 0.7) {
                         positionsToClose.push({
                             position: position,
@@ -982,7 +947,6 @@ class UltraAggressiveAIEngine {
                         continue;
                     }
 
-                    // Time-based exit after 2 minutes
                     const elapsed = (Date.now() - position.openedAt) / 1000;
                     if (elapsed > 120 && profitPercent > 0.5) {
                         positionsToClose.push({
@@ -995,7 +959,6 @@ class UltraAggressiveAIEngine {
                     }
                 }
 
-                // STOP LOSS
                 if (profitPercent < -0.5) {
                     positionsToClose.push({
                         position: position,
@@ -1006,7 +969,6 @@ class UltraAggressiveAIEngine {
                     continue;
                 }
 
-                // Time-based exit for losing positions
                 const elapsed = (Date.now() - position.openedAt) / 1000;
                 if (elapsed > 30 && profitPercent < 0) {
                     positionsToClose.push({
@@ -1118,22 +1080,18 @@ class UltraAggressiveAIEngine {
             return;
         }
 
-        // Monitor positions
         await this.monitorPositions();
 
-        // Check if we need to open more positions
         if (this.openPositions.length === 0) {
             console.log('🔥 No open positions, forcing trade...');
             await this.forceTrade();
         } else {
-            // Open additional positions if we have less than 5
             if (this.openPositions.length < 5) {
                 console.log(`📊 Opening additional position (${this.openPositions.length}/5)`);
                 await this.forceTrade();
             }
         }
 
-        // Retry if no positions
         if (this.openPositions.length === 0 && this.forceTradeAttempts < 10) {
             console.log(`🔄 Retry attempt ${this.forceTradeAttempts + 1}/10`);
             await new Promise(r => setTimeout(r, 2000));
@@ -1143,33 +1101,33 @@ class UltraAggressiveAIEngine {
 
     // ==================== START ====================
     async start() {
+        console.log(`========================================`);
         console.log(`🕋 Starting TRADING for ${this.userEmail}`);
         console.log(`   Investment: $${this.config.investmentAmount}`);
         console.log(`   Target: $${this.config.targetProfit}`);
         console.log(`   Time Limit: ${this.config.timeLimit} hours`);
         console.log(`   Trading Pairs: ${this.config.tradingPairs.join(', ')}`);
+        console.log(`   Account ID: ${this.accountId}`);
+        console.log(`========================================`);
 
-        // IMMEDIATELY FORCE FIRST TRADE
         console.log('🔥 Opening FIRST TRADE immediately...');
         const result = await this.forceTrade();
         
         if (!result) {
             console.log('⚠️ First trade failed, retrying...');
-            await new Promise(r => setTimeout(r, 2000));
+            await new Promise(r => setTimeout(r, 3000));
             await this.forceTrade();
         }
 
-        // Start trading loop - EVERY SECOND
         this.analysisInterval = setInterval(async () => {
             await this.tradingLoop();
-        }, 1000);
+        }, 3000);
 
-        // Monitor positions - EVERY SECOND
         this.monitorInterval = setInterval(async () => {
             if (this.isActive) {
                 await this.monitorPositions();
             }
-        }, 1000);
+        }, 2000);
 
         console.log('✅ Trading started - GUARANTEED TRADES');
     }
@@ -1212,7 +1170,8 @@ class UltraAggressiveAIEngine {
             firstTradeOpened: this.firstTradeOpened,
             tradeCount: this.tradeCount || 0,
             compoundMultiplier: this.compoundMultiplier || 1,
-            totalInvestment: this.totalInvestment || 0
+            totalInvestment: this.totalInvestment || 0,
+            lastError: this.lastError || null
         };
     }
 }
@@ -1222,12 +1181,14 @@ app.post('/api/start-trading', authenticate, async (req, res) => {
     try {
         const { investmentAmount, targetProfit, timeLimit = 1, tradingPairs } = req.body;
 
-        console.log('📊 Starting trading with:', {
-            investmentAmount,
-            targetProfit,
-            timeLimit,
-            tradingPairs
-        });
+        console.log('========================================');
+        console.log('📊 START TRADING REQUEST');
+        console.log(`📧 User: ${req.user.email}`);
+        console.log(`💵 Investment: $${investmentAmount}`);
+        console.log(`🎯 Target: $${targetProfit}`);
+        console.log(`⏰ Time Limit: ${timeLimit} hours`);
+        console.log(`📊 Pairs: ${tradingPairs ? tradingPairs.join(', ') : 'default'}`);
+        console.log('========================================');
 
         if (investmentAmount < 10) {
             return res.status(400).json({ success: false, message: 'Minimum investment is $10' });
@@ -1242,6 +1203,9 @@ app.post('/api/start-trading', authenticate, async (req, res) => {
         const users = readUsers();
         const user = users[req.user.email];
 
+        console.log(`🔍 User found: ${!!user}`);
+        console.log(`🔍 Session ID: ${user.tickerallSessionId || 'None'}`);
+
         if (!user.tickerallSessionId) {
             return res.status(400).json({ success: false, message: 'Please add Exness credentials first' });
         }
@@ -1249,6 +1213,7 @@ app.post('/api/start-trading', authenticate, async (req, res) => {
             return res.status(500).json({ success: false, message: 'TickerAll not initialized.' });
         }
 
+        console.log('📊 Fetching balance...');
         const result = await fetchRealBalance(user.tickerallSessionId);
         const balance = result.balance || 0;
         console.log(`💰 Starting balance: $${balance}`);
@@ -1276,6 +1241,7 @@ app.post('/api/start-trading', authenticate, async (req, res) => {
         await engine.start();
 
         console.log('✅ Trading started successfully!');
+        console.log('========================================');
 
         res.json({
             success: true,
@@ -1308,7 +1274,8 @@ app.post('/api/trading-update', authenticate, (req, res) => {
             success: true,
             currentProfit: 0,
             newTrades: [],
-            isActive: false
+            isActive: false,
+            lastError: null
         });
     }
 
@@ -1329,7 +1296,8 @@ app.post('/api/trading-update', authenticate, (req, res) => {
         firstTradeOpened: status.firstTradeOpened,
         tradeCount: status.tradeCount || 0,
         compoundMultiplier: status.compoundMultiplier || 1,
-        totalInvestment: status.totalInvestment || 0
+        totalInvestment: status.totalInvestment || 0,
+        lastError: status.lastError || null
     });
 });
 
@@ -1344,14 +1312,8 @@ app.get('/api/health', (req, res) => res.json({
     noGharar: true,
     noMaysir: true,
     simulation: false,
-    version: '52.0.0',
-    features: [
-        'AI-Driven Trading',
-        'Maximum Profit Per Trade',
-        'Unlimited Concurrent Trades',
-        'Auto-Compounding',
-        'ULTRA-AGGRESSIVE Speed'
-    ]
+    version: '53.0.0',
+    tickerInitialized: !!ticker
 }));
 
 // ==================== HALAL STATUS ====================
@@ -1387,12 +1349,11 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🕋 100% HALAL ULTRA-AGGRESSIVE AI BOT`);
     console.log(`✅ Server: http://localhost:${PORT}`);
     console.log(`✅ Login: mujtabahatif@gmail.com / Mujtabah@2598`);
+    console.log(`✅ Version: 53.0.0 - DEBUG ENABLED`);
+    console.log(`✅ Ticker initialized: ${!!ticker}`);
     console.log(`✅ FEATURES:`);
     console.log(`   - GUARANTEED TRADES - FORCED EXECUTION`);
-    console.log(`   - AI-Driven Analysis (RSI, MACD, Bollinger Bands)`);
-    console.log(`   - MAXIMUM PROFIT PER TRADE (No fixed TP)`);
-    console.log(`   - UNLIMITED Concurrent Trades`);
-    console.log(`   - AUTO-COMPOUNDING for 100x potential`);
+    console.log(`   - FULL DEBUGGING - See console for details`);
     console.log(`   - ULTRA-AGGRESSIVE (Every second analysis)`);
     console.log(`✅ LEVERAGE: 1:2 (Swap Free - Halal)`);
     console.log(`✅ 100% HALAL\n`);
